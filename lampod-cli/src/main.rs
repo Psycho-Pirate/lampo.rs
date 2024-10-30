@@ -8,6 +8,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::Path;
+
 use radicle_term as term;
 
 use lampo_bitcoind::BitcoinCore;
@@ -44,15 +48,57 @@ fn main() -> error::Result<()> {
     Ok(())
 }
 
+fn write_words_to_file<P: AsRef<Path>>(path: P, words: &Option<String>) -> io::Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+
+    match words {
+        Some(ref value) => {
+            file.write_all(value.as_bytes())?;
+        }
+        None => {
+            file.write_all(b"")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn load_words_from_file<P: AsRef<Path>>(path: P) -> io::Result<Option<String>> {
+    let mut file = File::open(path)?;
+    let mut content = String::new();
+
+    file.read_to_string(&mut content)?;
+
+    if content.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(content))
+    }
+}
+
 /// Return the root directory.
 fn run(args: LampoCliArgs) -> error::Result<()> {
+    let path = std::env::home_dir().expect("Impossible to get the home directory");
+    let path = path.to_str().unwrap();
+    let words_path = format!("{}/.lampo/{}", path, args.network.as_ref().unwrap());
+
     let mnemonic = if args.restore_wallet {
-        let inputs: String = term::input(
-            "BIP 39 Mnemonic",
-            None,
-            Some("To restore the wallet, lampo needs a BIP39 mnemonic with words separated by spaces."),
-        )?;
-        Some(inputs)
+        if Path::new(&format!("{}/wallet.dat", words_path)).exists() {
+            // Load the mnemonic from the file
+            load_words_from_file(format!("{}/wallet.dat", words_path))?
+        } else {
+            // If file doesn't exist, ask for user input
+            let inputs: String = term::input(
+                "BIP 39 Mnemonic",
+                None,
+                Some("To restore the wallet, lampo needs the BIP39 mnemonic with words separated by spaces."),
+            )?;
+            Some(inputs)
+        }
     } else {
         None
     };
@@ -112,15 +158,19 @@ fn run(args: LampoCliArgs) -> error::Result<()> {
         radicle_term::success!("Wallet Generated, please store these words in a safe way");
         radicle_term::println(
             radicle_term::format::badge_primary("wallet-keys"),
-            format!("{}", radicle_term::format::highlight(mnemonic)),
+            format!("{}", radicle_term::format::highlight(mnemonic.clone())),
         );
+        write_words_to_file(format!("{}/wallet.dat", words_path), &Some(mnemonic))?;
         wallet
     } else {
         match client.kind() {
             lampo_common::backend::BackendKind::Core => {
                 // SAFETY: It is safe to unwrap the mnemonic because we check it
                 // before.
-                CoreWalletManager::restore(Arc::new(lampo_conf.clone()), &mnemonic.unwrap())?
+                CoreWalletManager::restore(
+                    Arc::new(lampo_conf.clone()),
+                    &mnemonic.clone().unwrap(),
+                )?
             }
             lampo_common::backend::BackendKind::Nakamoto => {
                 error::bail!("wallet is not implemented for nakamoto")
@@ -129,6 +179,10 @@ fn run(args: LampoCliArgs) -> error::Result<()> {
     };
     log::debug!(target: "lampod-cli", "wallet created with success");
     let mut lampod = LampoDaemon::new(lampo_conf.clone(), Arc::new(wallet));
+
+    if !Path::new(&format!("{}/wallet.dat", words_path)).exists() {
+        write_words_to_file(format!("{}/wallet.dat", words_path), &mnemonic.clone())?;
+    }
 
     // Init the lampod
     lampod.init(client)?;
