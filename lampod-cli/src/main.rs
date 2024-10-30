@@ -48,7 +48,7 @@ fn main() -> error::Result<()> {
     Ok(())
 }
 
-fn write_words_to_file<P: AsRef<Path>>(path: P, words: &Option<String>) -> io::Result<()> {
+fn write_words_to_file<P: AsRef<Path>>(path: P, words: Option<String>) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -59,9 +59,7 @@ fn write_words_to_file<P: AsRef<Path>>(path: P, words: &Option<String>) -> io::R
         Some(ref value) => {
             file.write_all(value.as_bytes())?;
         }
-        None => {
-            file.write_all(b"")?;
-        }
+        None => {}
     }
 
     Ok(())
@@ -82,11 +80,13 @@ fn load_words_from_file<P: AsRef<Path>>(path: P) -> io::Result<Option<String>> {
 
 /// Return the root directory.
 fn run(args: LampoCliArgs) -> error::Result<()> {
-    let path = std::env::home_dir().expect("Impossible to get the home directory");
-    let path = path.to_str().unwrap();
-    let words_path = format!("{}/.lampo/{}", path, args.network.as_ref().unwrap());
+    let restore_wallet = args.restore_wallet;
 
-    let mnemonic = if args.restore_wallet {
+    // After this point the configuration is ready!
+    let mut lampo_conf: LampoConf = args.try_into()?;
+
+    let words_path = format!("{}/", lampo_conf.path());
+    let mnemonic = if restore_wallet {
         if Path::new(&format!("{}/wallet.dat", words_path)).exists() {
             // Load the mnemonic from the file
             load_words_from_file(format!("{}/wallet.dat", words_path))?
@@ -103,8 +103,6 @@ fn run(args: LampoCliArgs) -> error::Result<()> {
         None
     };
 
-    // After this point the configuration is ready!
-    let mut lampo_conf: LampoConf = args.try_into()?;
     log::debug!(target: "lampod-cli", "init wallet ..");
     // init the logger here
     logger::init(
@@ -158,9 +156,9 @@ fn run(args: LampoCliArgs) -> error::Result<()> {
         radicle_term::success!("Wallet Generated, please store these words in a safe way");
         radicle_term::println(
             radicle_term::format::badge_primary("wallet-keys"),
-            format!("{}", radicle_term::format::highlight(mnemonic.clone())),
+            format!("{}", radicle_term::format::highlight(&mnemonic)),
         );
-        write_words_to_file(format!("{}/wallet.dat", words_path), &Some(mnemonic))?;
+        write_words_to_file(format!("{}/wallet.dat", words_path), Some(mnemonic))?;
         wallet
     } else {
         match client.kind() {
@@ -181,7 +179,7 @@ fn run(args: LampoCliArgs) -> error::Result<()> {
     let mut lampod = LampoDaemon::new(lampo_conf.clone(), Arc::new(wallet));
 
     if !Path::new(&format!("{}/wallet.dat", words_path)).exists() {
-        write_words_to_file(format!("{}/wallet.dat", words_path), &mnemonic.clone())?;
+        write_words_to_file(format!("{}/wallet.dat", words_path), mnemonic)?;
     }
 
     // Init the lampod
